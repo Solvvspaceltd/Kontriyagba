@@ -2514,15 +2514,45 @@ function audioInit() {
 }
 function tone(f, dur, type, vol, when, slide) { if (!AC) return; const t = AC.currentTime + (when || 0), o = AC.createOscillator(), g = AC.createGain(); o.type = type || 'square'; o.frequency.setValueAtTime(f, t); if (slide) o.frequency.exponentialRampToValueAtTime(f * slide, t + dur); g.gain.setValueAtTime(vol || .12, t); g.gain.exponentialRampToValueAtTime(.001, t + dur); o.connect(g).connect(master); o.start(t); o.stop(t + dur + .05); }
 function noiseHit(dur, vol, f) { if (!AC) return; const n = AC.createBuffer(1, AC.sampleRate * dur, AC.sampleRate), d = n.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length); const s = AC.createBufferSource(); s.buffer = n; const fl = AC.createBiquadFilter(); fl.type = 'lowpass'; fl.frequency.value = f || 900; const g = AC.createGain(); g.gain.value = vol || .4; s.connect(fl).connect(g).connect(master); s.start(); }
-// a car horn: two detuned reeds, a fast attack, through the master so it sits over the radio
-function horn(f, dur, vol, when) { if (!AC) return; const t = AC.currentTime + (when || 0), g = AC.createGain(); g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + .02); g.gain.setValueAtTime(vol, t + dur - .03); g.gain.exponentialRampToValueAtTime(.0001, t + dur + .04); g.connect(master); [1, 1.26, 2.02].forEach((k, i) => { const o = AC.createOscillator(); o.type = i === 2 ? 'triangle' : 'sawtooth'; o.frequency.value = f * k; const og = AC.createGain(); og.gain.value = i === 2 ? .35 : 1; o.connect(og).connect(g); o.start(t); o.stop(t + dur + .06); }); }
-function hornBlast(when, dur) {
-  if (!AC) return; const t = AC.currentTime + when, out = AC.createGain(), sh = AC.createWaveShaper(), lp = AC.createBiquadFilter();
-  const curve = new Float32Array(256); for (let i = 0; i < 256; i++) { const x = i / 128 - 1; curve[i] = Math.tanh(x * 2.4); } sh.curve = curve;
-  lp.type = 'lowpass'; lp.frequency.value = 2400; out.gain.setValueAtTime(.0001, t); out.gain.exponentialRampToValueAtTime(.16, t + .02); out.gain.setValueAtTime(.16, t + dur - .05); out.gain.exponentialRampToValueAtTime(.0001, t + dur);
-  sh.connect(lp).connect(out).connect(master);
-  [[415, -7], [415, 6], [523, -5], [523, 8]].forEach(([f, c]) => { const o = AC.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(f * 1.02, t); o.frequency.exponentialRampToValueAtTime(f, t + .06); o.detune.value = c; const g = AC.createGain(); g.gain.value = .25; o.connect(g).connect(sh); o.start(t); o.stop(t + dur + .02); });
+// a real car horn: an electric diaphragm buzzing on two notes a third apart, a little rough and unsteady,
+// shaped by the trumpet (two resonances), driven a bit hard, with a slap back off the buildings
+let HORN_WAVE = null, NOISE_BUF = null, SLAP = null;
+function hornKit() {
+  if (HORN_WAVE) return; const N = 40, re = new Float32Array(N), im = new Float32Array(N);
+  for (let n = 1; n < N; n++) im[n] = (n % 2 ? 1 : .55) / Math.pow(n, .75);   // buzzy, pulse-like, odd harmonics stronger
+  HORN_WAVE = AC.createPeriodicWave(re, im);
+  NOISE_BUF = AC.createBuffer(1, AC.sampleRate, AC.sampleRate); const d = NOISE_BUF.getChannelData(0); for (let k = 0; k < d.length; k++) d[k] = Math.random() * 2 - 1;
+  // one shared slap-back echo for every horn
+  const dl = AC.createDelay(.5), fb = AC.createGain(), lp = AC.createBiquadFilter(), out = AC.createGain(); dl.delayTime.value = .085; fb.gain.value = .22; lp.type = 'lowpass'; lp.frequency.value = 2600; out.gain.value = .5;
+  dl.connect(lp).connect(fb).connect(dl); lp.connect(out).connect(master); SLAP = dl;
 }
+function hornVoice(f, vol, t, far) {
+  hornKit();
+  const out = AC.createGain(); out.gain.setValueAtTime(.0001, t); out.gain.exponentialRampToValueAtTime(vol, t + .012);
+  const sh = AC.createWaveShaper(), c = new Float32Array(512); for (let k = 0; k < 512; k++) { const x = k / 256 - 1; c[k] = Math.tanh(x * 2.2) / Math.tanh(2.2); } sh.curve = c;
+  const r1 = AC.createBiquadFilter(), r2 = AC.createBiquadFilter(), top = AC.createBiquadFilter();
+  r1.type = 'peaking'; r1.frequency.value = 1150; r1.Q.value = 1.4; r1.gain.value = 7; r2.type = 'peaking'; r2.frequency.value = 2700; r2.Q.value = 2; r2.gain.value = 6;
+  top.type = 'lowpass'; top.frequency.value = far ? 1700 : 4800; top.Q.value = .5;
+  const mix = AC.createGain(); mix.gain.value = .3; mix.connect(sh).connect(r1).connect(r2).connect(top).connect(out); out.connect(master); const send = AC.createGain(); send.gain.value = far ? .35 : .22; out.connect(send).connect(SLAP);
+  const nodes = [];
+  // the two notes, each from two slightly different reeds; the pitch scoops up as the horn starts
+  [[1, -6], [1, 7], [1.26, -4], [1.26, 9]].forEach(([k, cents]) => {
+    const o = AC.createOscillator(); o.setPeriodicWave(HORN_WAVE); o.frequency.setValueAtTime(f * k * .93, t); o.frequency.exponentialRampToValueAtTime(f * k, t + .045); o.detune.value = cents;
+    const g = AC.createGain(); g.gain.value = k > 1 ? .8 : 1; o.connect(g).connect(mix); o.start(t); nodes.push(o);
+  });
+  // unsteady: a slow wobble and a fast flutter on the pitch
+  const lfo = AC.createOscillator(), lg = AC.createGain(); lfo.frequency.value = 5.5 + Math.random() * 3; lg.gain.value = 6; lfo.connect(lg); nodes.forEach(o => lg.connect(o.detune)); lfo.start(t); nodes.push(lfo);
+  // the buzz of the diaphragm: noise in the high band
+  const nz = AC.createBufferSource(); nz.buffer = NOISE_BUF; nz.loop = true; const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3200; bp.Q.value = .8; const ng = AC.createGain(); ng.gain.value = .05; nz.connect(bp).connect(ng).connect(mix); nz.start(t); nodes.push(nz);
+  return { out, nodes, stop(at) { const e = Math.max(at, t + .06); out.gain.cancelScheduledValues(e); out.gain.setValueAtTime(vol, e); out.gain.exponentialRampToValueAtTime(.0001, e + .07); nodes.forEach(n => { try { n.stop(e + .1); } catch (er) {} }); } };
+}
+// one beep from anyone on the road
+function horn(f, dur, vol, when) { if (!AC || muted) return; const t = AC.currentTime + (when || 0), far = vol < .12; hornVoice(f * 1.4, Math.min(.5, vol * 1.6), t, far).stop(t + dur); }
+function hornBlast(when, dur) { if (!AC) return; const t = AC.currentTime + when; hornVoice(420, .5, t, false).stop(t + dur); }
+// the player's horn sounds for as long as the button is held (a tap is a short peep)
+let MYHORN = null;
+function hornDown(f) { if (!AC || muted) return; hornUp(); MYHORN = { v: hornVoice(f, .55, AC.currentTime, false), t0: AC.currentTime }; }
+function hornUp() { if (!MYHORN) return; const h = MYHORN; MYHORN = null; h.v.stop(Math.max(AC.currentTime, h.t0 + .16)); }
 let ambG = null;
 function ambienceInit() {
   if (!AC || ambG) return; const n = AC.createBuffer(1, AC.sampleRate * 3, AC.sampleRate), d = n.getChannelData(0); let b = 0; for (let i = 0; i < d.length; i++) { b = .985 * b + .015 * (Math.random() * 2 - 1); d[i] = b * 6; }
@@ -2638,16 +2668,21 @@ function playVox(id) {
   if (/^call_/.test(id) && VOX.my_note && R() < .35) id = 'my_note';
   const L = VOX[id]; if (!L || !L.length || muted) return false;
   // one voice at a time, so lines never talk over each other
-  if (voxAudio && !voxAudio.paused && performance.now() < voxBusy) return true;
+  if (performance.now() < voxBusy) return true;
   const k = Math.floor(R() * L.length), src = L[k];
   // a voice file is downloaded the first time it is needed, then kept in memory (and in the offline cache)
-  if (typeof src === 'string' && /^voice\//.test(src) && location.protocol !== 'file:' && !VOXDIRECT.has(src)) { voxBusy = performance.now() + 1500; voxFetch(src).then(u => { L[k] = u; voxBusy = 0; playVox(id); }).catch(() => { VOXDIRECT.add(src); voxBusy = 0; }); return true; }
+  if (typeof src === 'string' && /^voices?\//i.test(src) && location.protocol !== 'file:' && !VOXDIRECT.has(src)) { voxBusy = performance.now() + 1500; voxFetch(src).then(u => { L[k] = u; voxBusy = 0; playVox(id); }).catch(() => { VOXDIRECT.add(src); voxBusy = 0; }); return true; }
+  // played through the game's sound engine when we have it decoded: phones that block extra audio players still play these
+  if (AC && VOXBUF[src]) { try { if (AC.state === 'suspended') AC.resume(); const b = AC.createBufferSource(), g = AC.createGain(); b.buffer = VOXBUF[src]; g.gain.value = Math.min(1.4, .8 + VOL * .6); b.connect(g).connect(master); duck(true); voxAudio = null; b.onended = () => { voxBusy = 0; duck(false); }; b.start(); voxBusy = performance.now() + b.buffer.duration * 1000 + 150; return true; } catch (e) {} }
+  if (AC && VOXRAW[src] && !VOXBUF[src]) { try { AC.decodeAudioData(VOXRAW[src].slice(0), b2 => { VOXBUF[src] = b2; }, () => {}); } catch (e) {} }
   const a = new Audio(src); voxAudio = a; a.volume = Math.min(1, .55 + VOL * .45); duck(true);
   a.onended = a.onerror = () => { voxBusy = 0; duck(false); };
   a.play().catch(() => { voxBusy = 0; duck(false); }); voxBusy = performance.now() + 6000; return true;
 }
 const VOXF = {}, VOXDIRECT = new Set();  // VOXDIRECT: files the browser would not fetch; they play straight from their address
-function voxFetch(src) { return VOXF[src] || (VOXF[src] = fetch(src).then(r => { if (!r.ok) throw new Error(r.status); return r.blob(); }).then(b => URL.createObjectURL(b)).catch(e => { delete VOXF[src]; throw e; })); }
+const VOXBUF = {}, VOXRAW = {};
+function voxFetch(src) { return VOXF[src] || (VOXF[src] = fetch(src).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); }).then(ab => { const u = URL.createObjectURL(new Blob([ab], { type: 'audio/mpeg' })); VOXRAW[u] = ab;
+  if (AC && AC.decodeAudioData) return new Promise(res => { try { AC.decodeAudioData(ab.slice(0), buf => { VOXBUF[u] = buf; res(u); }, () => res(u)); } catch (e) { res(u); } }); return u; }).catch(e => { delete VOXF[src]; throw e; })); }
 function duck(on) { PLAYER.volume = VOL * (on ? .3 : 1) * .85; musDuck(on); }
 // a line is always shown as a bubble; the recording plays if there is one
 function speak(id, text, obj, cls, dur, y) { bubble(text, obj, cls, dur, y); playVox(id); }
@@ -2696,7 +2731,8 @@ const STATIONS = [
   { id: 'playlist', name: 'Yagba Music', freq: 'PLAY', playlist: true, blurb: 'Di official soundtrack, in order' },
   { id: 'mine', name: 'My songs', freq: 'AUX', mine: true, blurb: 'Only di songs yu add' }
 ];
-const RADIO = { st: store.get('station', 0), i: 0, trk: 0, timer: null, lines: 0, on: false };
+if (!store.get('radio20', false)) { store.set('radio20', true); if (!store.get('station', 0)) store.set('station', 3); }
+const RADIO = { st: store.get('station', 3), i: 0, trk: 0, timer: null, lines: 0, on: false };
 function djLines() {
   const jn = (JUNC.find(j => j.d > P.d) || {}).name || route.stops[0];
   return [['dj_hello', 'Aw di bodi, Salone! Una welcome to Yagba FM, di station fɔ all wi pipul dem.'], ['dj_traffic', `Traffic news: hold-up de na ${jn}, so driver dem, tek am smɔl smɔl.`], ['dj_shout', 'Big shout-out to wi pipul dem na London, America, Germany and all ova di world. Wi miss una!'], ['', 'Poda-poda driver dem, nɔ overload o! Police de watch.'], ['', 'Dis next one na fɔ all di apprentice dem wey de shout from morning till night!'], ['dj_niicey', 'Niicey new one, Do lek so, don drop! E de on all platforms. Go stream am now.']];
@@ -2726,10 +2762,19 @@ const LIB = { music: [], photoId: null, db: null, voices: [], pl: 0 };
 function idb() { return new Promise((res, rej) => { if (LIB.db) return res(LIB.db); if (!window.indexedDB) return rej(new Error('no idb')); const r = indexedDB.open('freetong-yagba', 1); r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id', autoIncrement: true }); r.onsuccess = () => { LIB.db = r.result; res(LIB.db); }; r.onerror = () => rej(r.error); }); }
 function idbReq(md, fn) { return idb().then(db => new Promise((res, rej) => { const q = fn(db.transaction('files', md).objectStore('files')); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); })); }
 const trackName = n => n.replace(/\.[a-z0-9]+$/i, '').replace(/[_]+/g, ' ').trim();
+// the voice clips live in voice/. Web servers care about capitals: if the folder went up as Voice/, use that instead.
+async function voiceFolderCheck() {
+  if (location.protocol === 'file:' || !window.fetch) return; const any = Object.values(VOX).flat().find(v => typeof v === 'string' && /^voice\//.test(v)); if (!any) return;
+  try { const r = await fetch(any, { method: 'HEAD', cache: 'no-store' }); if (r.ok) return; } catch (e) {}
+  for (const alt of ['Voice/', 'VOICE/', 'Voices/', 'voices/']) {
+    try { const r = await fetch(any.replace(/^voice\//, alt), { method: 'HEAD', cache: 'no-store' }); if (r.ok) { Object.values(VOX).forEach(L => L.forEach((v, i) => { if (typeof v === 'string' && /^voice\//.test(v)) L[i] = v.replace(/^voice\//, alt); })); VOXDIRECT.clear(); ambId = ''; lambId = ''; return; } } catch (e) {}
+  }
+}
 async function loadLib() {
   LIB.music = (window.__BUNDLED_MUSIC || []).map(m => ({ name: m.name, sub: m.sub || '', artist: m.artist || '', n: m.n, official: !!m.official, launch: !!m.launch, src: m.src, bundled: true }));
   (window.__BUNDLED_VOICE || []).forEach(v => { voxAdd(v.name, v.src); LIB.voices.push({ name: v.name, bundled: true }); });
   try { const all = await idbReq('readonly', s => s.getAll()); all.forEach(f => { if (f.kind === 'music') LIB.music.push({ id: f.id, name: f.name, src: URL.createObjectURL(f.blob) }); if (f.kind === 'photo') setPromoPhoto(URL.createObjectURL(f.blob), f.id); if (f.kind === 'voice') { voxAdd(f.name, URL.createObjectURL(f.blob)); LIB.voices.push({ id: f.id, name: f.name }); } }); } catch (e) {}
+  voiceFolderCheck();
   if (window.__BUNDLED_PHOTO && !LIB.photoId) setPromoPhoto(window.__BUNDLED_PHOTO, 'bundled');
   if (typeof renderSheet === 'function' && SHEET.open) renderSheet(SHEET.open);
 }
@@ -3179,7 +3224,7 @@ function bigSign(kick, name, sub) { $('bsKick').textContent = kick; $('bsName').
 let wheelT = 0; function wheelTurn(dir) { const w = $('wTurn'); if (!w) return; w.style.transform = `rotate(${dir * 28}deg)`; clearTimeout(wheelT); wheelT = setTimeout(() => w.style.transform = '', 260); }
 function laneStep(dir) { if (mode !== 'play' || paused || AUTO) return; wheelTurn(dir); const was = P.lane; P.lane = clamp(P.lane + dir, MINL, KERB); if (P.lane < ONC && was >= ONC) toast('Overtaking! Watch di oncoming motor', 'bad', 1.2); }
 function honk() {
-  if (mode !== 'play' || paused) return; audioInit(); horn(motor.id === 'okada' || motor.id === 'keke' ? 700 : motor.id === 'poda' ? 260 : 380, .35, .22);
+  if (mode !== 'play' || paused) return; audioInit(); hornDown(motor.id === 'okada' || motor.id === 'keke' ? 560 : motor.id === 'poda' ? 360 : 420); clearTimeout(honk.t); honk.t = setTimeout(() => { if (!honk.held) hornUp(); }, 260);
   const now = performance.now(); P.honks = P.honks.filter(t => now - t < 3000); P.honks.push(now);
   if (P.honks.length > 4) { P.mood = Math.max(0, P.mood - 4); if (P.honks.length === 5) speak('pax_horn', 'Driver, small small wit di horn!', player.g, '', 2); }
   OBS.forEach(o => { if ((o.type === 'goat' || o.type === 'ped') && o.d > P.d && o.d - P.d < 45 && o.state === 'cross') { o.vx *= 2.2; if (o.type === 'goat') SFX.goat(); } });
@@ -3192,14 +3237,14 @@ addEventListener('keydown', e => {
   else if (e.key === 'ArrowRight' || e.key === 'd') { laneStep(1); e.preventDefault(); }
   else if (e.key === 'ArrowUp' || e.key === 'w') { P.gas = true; e.preventDefault(); }
   else if (e.key === 'ArrowDown' || e.key === 's') { P.brake = true; e.preventDefault(); }
-  else if (e.key === ' ' || e.key === 'h') { honk(); e.preventDefault(); }
+  else if (e.key === ' ' || e.key === 'h') { honk.held = true; honk(); e.preventDefault(); }
   else if (e.key === 'r') radioCycle();
   else if (e.key === 'p') togglePause();
   else if (e.key === 'b') buyNearest();
 });
-addEventListener('keyup', e => { if (e.key === 'ArrowUp' || e.key === 'w') P.gas = false; if (e.key === 'ArrowDown' || e.key === 's') P.brake = false; });
+addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'h') { honk.held = false; hornUp(); } if (e.key === 'ArrowUp' || e.key === 'w') P.gas = false; if (e.key === 'ArrowDown' || e.key === 's') P.brake = false; });
 function hold(id, on, off) { const b = $(id); b.addEventListener('pointerdown', e => { e.preventDefault(); audioInit(); b.classList.add('press'); on(); }); ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => { b.classList.remove('press'); if (off) off(); })); }
-hold('bLeft', () => laneStep(-1)); hold('bRight', () => laneStep(1)); hold('bHorn', honk);
+hold('bLeft', () => laneStep(-1)); hold('bRight', () => laneStep(1)); hold('bHorn', () => { honk.held = true; honk(); }, () => { honk.held = false; hornUp(); });
 hold('bGas', () => P.gas = true, () => P.gas = false); hold('bBrake', () => P.brake = true, () => P.brake = false);
 let sw = null;
 $('gl').addEventListener('pointerdown', e => { sw = { x: e.clientX, y: e.clientY, t: performance.now() }; audioInit(); });
