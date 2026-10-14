@@ -5974,7 +5974,9 @@ document.addEventListener('click', e => {
 });
 /* ================= the walkthrough: two screens on the first open ================= */
 // one bank for the whole game: driving days and story episodes pay in, Mi Life spends it
-function bankBal() { const L0 = store.get('life', null); return L0 && L0.v === 1 ? Math.round((LIFE || L0).bank || 0) : Math.round(store.get('kbank', 0)); }
+// LIFE is declared later in the page; on the first paint it does not exist yet, so read it safely
+function lifeNow() { try { return LIFE; } catch (e) { return null; } }
+function bankBal() { const L0 = store.get('life', null); return L0 && L0.v === 1 ? Math.round((lifeNow() || L0).bank || 0) : Math.round(store.get('kbank', 0)); }
 function bankIn(n) {
   n = Math.max(0, Math.round(n)); if (!n) return 0;
   const L0 = store.get('life', null);
